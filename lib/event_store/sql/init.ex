@@ -5,31 +5,35 @@ defmodule EventStore.Sql.Init do
 
   def statements(config) do
     column_data_type = Keyword.fetch!(config, :column_data_type)
+    events_table_partition_count = Keyword.get(config, :events_table_partition_count)
     schema = Keyword.fetch!(config, :schema)
 
     [
       ~s(SET LOCAL search_path TO "#{schema}";),
       create_streams_table(),
       create_stream_uuid_index(),
-      create_events_table(column_data_type),
-      create_stream_events_table(),
-      create_stream_events_index(),
-      create_event_store_exception_function(),
-      create_event_store_delete_function(),
-      prevent_streams_delete(),
-      prevent_event_delete(),
-      prevent_event_update(),
-      prevent_stream_events_delete(),
-      prevent_stream_events_update(),
-      create_notify_events_function(),
-      seed_all_stream(),
-      create_event_notification_trigger(),
-      create_subscriptions_table(),
-      create_subscription_index(),
-      create_snapshots_table(column_data_type),
-      create_schema_migrations_table(),
-      record_event_store_schema_version()
-    ]
+      create_events_table(column_data_type, events_table_partition_count)
+    ] ++
+      create_events_table_partitions(events_table_partition_count) ++
+      [
+        create_stream_events_table(),
+        create_stream_events_index(),
+        create_event_store_exception_function(),
+        create_event_store_delete_function(),
+        prevent_streams_delete(),
+        prevent_event_delete(),
+        prevent_event_update(),
+        prevent_stream_events_delete(),
+        prevent_stream_events_update(),
+        create_notify_events_function(),
+        seed_all_stream(),
+        create_event_notification_trigger(),
+        create_subscriptions_table(),
+        create_subscription_index(),
+        create_snapshots_table(column_data_type),
+        create_schema_migrations_table(),
+        record_event_store_schema_version()
+      ]
   end
 
   defp create_streams_table do
@@ -58,7 +62,7 @@ defmodule EventStore.Sql.Init do
     """
   end
 
-  defp create_events_table(column_data_type) do
+  defp create_events_table(column_data_type, nil) do
     """
     CREATE TABLE events
     (
@@ -71,6 +75,32 @@ defmodule EventStore.Sql.Init do
         created_at timestamp with time zone DEFAULT NOW() NOT NULL
     );
     """
+  end
+
+  defp create_events_table(column_data_type, _) do
+    """
+    CREATE TABLE events
+    (
+        event_id uuid PRIMARY KEY NOT NULL,
+        event_type text NOT NULL,
+        causation_id uuid NULL,
+        correlation_id uuid NULL,
+        data #{column_data_type} NOT NULL,
+        metadata #{column_data_type} NULL,
+        created_at timestamp with time zone DEFAULT NOW() NOT NULL
+    )
+    PARTITION BY HASH (event_id);
+    """
+  end
+
+  def create_events_table_partitions(nil), do: []
+
+  def create_events_table_partitions(events_table_partition_count) do
+    Enum.map(0..(events_table_partition_count - 1), fn i ->
+      """
+      CREATE TABLE events_#{i} PARTITION OF events FOR VALUES WITH (MODULUS #{events_table_partition_count}, REMAINDER #{i});
+      """
+    end)
   end
 
   defp create_event_store_exception_function do
